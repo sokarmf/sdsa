@@ -33,6 +33,57 @@ local selectedObject = nil
 local clickToSelectEnabled = false
 local selectConnection = nil
 
+-- Function to recursively find selectable objects in a hierarchy
+local function findSelectableObjects(parent)
+    local selectableObjects = {}
+    
+    local function recursiveSearch(obj)
+        -- เพิ่มเงื่อนไขสำหรับการค้นหาอ็อบเจ็กต์ที่ซ่อนหรือยังไม่ถูกเลือก
+        if obj and pcall(function() return obj.Name end) then
+            -- เพิ่มประเภทอ็อบเจ็กต์ที่ต้องการเลือก
+            local validTypes = {
+                "Model", "Part", "MeshPart", "UnionOperation", 
+                "Decal", "SpecialMesh", "Folder", "BasePart"
+            }
+            
+            -- ตรวจสอบว่าเป็นประเภทที่ต้องการหรือไม่
+            local isValidType = false
+            for _, typeName in ipairs(validTypes) do
+                if obj:IsA(typeName) then
+                    isValidType = true
+                    break
+                end
+            end
+            
+            if isValidType then
+                -- ตรวจสอบเพิ่มเติมเพื่อหลีกเลี่ยงการเลือกวัตถุที่ไม่ต้องการ
+                local shouldAdd = true
+                
+                -- ข้ามตัวละครของผู้เล่น
+                for _, player in pairs(game:GetService("Players"):GetPlayers()) do
+                    if player.Character == obj or obj:IsDescendantOf(player.Character) then
+                        shouldAdd = false
+                        break
+                    end
+                end
+                
+                -- เพิ่มเงื่อนไขเพื่อกรองวัตถุ
+                if shouldAdd and obj.Name ~= "" then
+                    table.insert(selectableObjects, obj)
+                end
+            end
+        end
+        
+        -- ค้นหาใน Children
+        for _, child in pairs(obj:GetChildren()) do
+            recursiveSearch(child)
+        end
+    end
+    
+    recursiveSearch(parent)
+    return selectableObjects
+end
+
 -- Function to handle mouse click for object selection
 local function setupClickToSelect()
     if not clickToSelectEnabled then
@@ -41,16 +92,61 @@ local function setupClickToSelect()
             if input.UserInputType == Enum.UserInputType.MouseButton1 and not gameProcessed then
                 local player = game:GetService("Players").LocalPlayer
                 local mouse = player:GetMouse()
-                local target = mouse.Target
+                
+                -- ใช้ Ray casting เพื่อหาอ็อบเจ็กต์ตรงตำแหน่งเคอร์เซอร์
+                local camera = workspace.CurrentCamera
+                local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
+                
+                local target, hitPosition = workspace:FindPartOnRayWithIgnoreList(
+                    Ray.new(ray.Origin, ray.Direction * 1000), 
+                    {player.Character}
+                )
                 
                 if target then
-                    -- Select the object
-                    selectedObject = target
+                    -- เริ่มจาก target แล้วค่อยๆ ขึ้นไปหา parent
+                    local currentObj = target
+                    local objectToSelect = currentObj
                     
-                    -- Notify the user
+                    -- หาอ็อบเจ็กต์ที่เป็นโมเดลหรือมีข้อมูลที่สำคัญ
+                    while currentObj do
+                        -- เช็คเงื่อนไขเพื่อหาอ็อบเจ็กต์ที่เหมาะสม
+                        if currentObj:IsA("Model") or 
+                           (pcall(function() return currentObj:GetFullName() end) and 
+                            pcall(function() return currentObj.Name end) and 
+                            currentObj.Name ~= "") then
+                            objectToSelect = currentObj
+                        end
+                        
+                        -- ขึ้นไปหา parent
+                        currentObj = currentObj.Parent
+                        
+                        -- หยุดเมื่อถึง Workspace หรือ nil
+                        if not currentObj or currentObj == workspace then
+                            break
+                        end
+                    end
+                    
+                    -- เลือกอ็อบเจ็กต์
+                    selectedObject = objectToSelect
+                    
+                    -- แสดงการแจ้งเตือน
+                    local objectInfo = string.format(
+                        "Name: %s\nClass: %s\nPath: %s", 
+                        selectedObject.Name, 
+                        selectedObject.ClassName, 
+                        selectedObject:GetFullName()
+                    )
+                    
                     Rayfield:Notify({
                         Title = "Object Selected",
-                        Content = "Selected: " .. target:GetFullName(),
+                        Content = objectInfo,
+                        Duration = 5,
+                        Image = nil,
+                    })
+                else
+                    Rayfield:Notify({
+                        Title = "Click to Select",
+                        Content = "No object found at the cursor location",
                         Duration = 3.5,
                         Image = nil,
                     })
@@ -60,7 +156,7 @@ local function setupClickToSelect()
         
         Rayfield:Notify({
             Title = "Click to Select",
-            Content = "Click on any part in the game to select it",
+            Content = "Click directly on the object you want to select",
             Duration = 3.5,
             Image = nil,
         })
@@ -127,10 +223,26 @@ WorkspaceTab:CreateButton({
         
         -- ฟังก์ชันค้นหาวัตถุแบบง่าย
         local function findObjects(parent, depth)
-            if depth > 2 then return end
+            if depth > 10 then return end -- เพิ่มความลึกในการค้นหา
             
             for _, obj in pairs(parent:GetChildren()) do
-                if obj:IsA("Model") or obj:IsA("Part") or obj:IsA("MeshPart") then
+                -- เพิ่มประเภทอ็อบเจ็กต์ให้มากขึ้น
+                local validTypes = {
+                    "Model", "Part", "MeshPart", "UnionOperation", "Decal", "Texture", 
+                    "SpecialMesh", "Folder", "Script", "LocalScript", "ModuleScript", 
+                    "TextLabel", "ImageLabel", "Frame", "ViewportFrame", "Sound", 
+                    "RemoteEvent", "RemoteFunction", "BoolValue", "IntValue", "StringValue"
+                }
+                
+                local isValidType = false
+                for _, typeName in ipairs(validTypes) do
+                    if obj:IsA(typeName) then
+                        isValidType = true
+                        break
+                    end
+                end
+                
+                if isValidType then
                     -- ข้ามตัวละครของผู้เล่น
                     local isPlayerModel = false
                     for _, player in pairs(game:GetService("Players"):GetPlayers()) do
@@ -144,7 +256,8 @@ WorkspaceTab:CreateButton({
                         table.insert(objects, {
                             Name = obj.Name,
                             Path = obj:GetFullName(),
-                            Instance = obj
+                            Instance = obj,
+                            Class = obj.ClassName
                         })
                     end
                 end
